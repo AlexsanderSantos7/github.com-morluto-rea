@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { access, realpath, writeFile } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { TextDecoder } from "node:util";
 import type { JavaScriptDeobfuscationPort } from "../../application/javascript/JavaScriptDeobfuscationPort.js";
 import type {
@@ -72,9 +72,9 @@ export class JsRedoxProvider implements JavaScriptDeobfuscationPort {
     > = () =>
       PrivateRuntimeRoot.create({
         prefix: "rea-js-redox-",
-        ...(environment.TMPDIR === undefined
+        ...(runtimeParent(environment) === undefined
           ? {}
-          : { parent: environment.TMPDIR }),
+          : { parent: runtimeParent(environment) }),
       }),
   ) {}
 
@@ -123,11 +123,6 @@ export class JsRedoxProvider implements JavaScriptDeobfuscationPort {
       const engine = await this.#resolveEngine(options?.signal);
       const source = await this.#readInput(input.path, options?.signal);
       root = await this.createRuntime();
-      const boundLimiter = await this.#bindLimiter(
-        engine,
-        root.path,
-        options?.signal,
-      );
       try {
         tree = await SafeOutputTree.create(input.output_directory);
       } catch (cause: unknown) {
@@ -143,12 +138,12 @@ export class JsRedoxProvider implements JavaScriptDeobfuscationPort {
       execution = await executeJsRedox({
         request: input,
         ...(options?.signal === undefined ? {} : { signal: options.signal }),
-        engine: boundLimiter,
+        engine,
         source,
         runtimePath: root.path,
         tree,
         resourceScope: this.#resources,
-        run: (request) => this.#run(boundLimiter, request),
+        run: (request) => this.#run(engine, request),
       });
       await root.close();
       root = undefined;
@@ -353,7 +348,7 @@ export class JsRedoxProvider implements JavaScriptDeobfuscationPort {
     runtimePath: string,
     signal?: AbortSignal,
   ) {
-    const limiter = join(runtimePath, "prlimit");
+    const limiter = join(runtimePath, `prlimit-${randomUUID()}`);
     await writeFile(limiter, engine.limiterExecutable, {
       flag: "wx",
       mode: 0o700,
@@ -371,10 +366,15 @@ export class JsRedoxProvider implements JavaScriptDeobfuscationPort {
         OPERATION,
         "Owned resource-limiter snapshot disagrees with the fingerprinted executable bytes.",
       );
-    return { ...engine, limiter };
+    return limiter;
   }
 
-  async #run(engine: { limiter: string }, request: JsRedoxRunRequest) {
+  async #run(engine: JsRedoxEngine, request: JsRedoxRunRequest) {
+    const limiter = await this.#bindLimiter(
+      engine,
+      request.cwd,
+      request.signal,
+    );
     const limits = await readLinuxResourceLimits(
       {
         address_space_bytes: JS_REDOX_LIMITS.addressSpaceBytes,
@@ -385,7 +385,7 @@ export class JsRedoxProvider implements JavaScriptDeobfuscationPort {
     );
     return runOwnedCommand(
       {
-        command: engine.limiter,
+        command: limiter,
         arguments: [
           `--as=${String(limits.address_space_bytes)}`,
           `--fsize=${String(limits.file_bytes)}`,
@@ -534,6 +534,15 @@ export class JsRedoxProvider implements JavaScriptDeobfuscationPort {
     return undefined;
   }
 }
+
+const runtimeParent = (
+  environment: Readonly<NodeJS.ProcessEnv>,
+): string | undefined => {
+  const configured = environment.TMPDIR?.trim();
+  return configured === undefined || configured.length === 0
+    ? undefined
+    : resolve(configured);
+};
 
 const ownedCommandDiagnostics = (
   failure: OwnedCommandFailure,
