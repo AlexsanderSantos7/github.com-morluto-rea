@@ -1,4 +1,4 @@
-import { isAbsolute } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 
 import type { AnalysisError } from "../../domain/analysisErrorBase.js";
 import {
@@ -67,6 +67,14 @@ export class JavaScriptDeobfuscationService {
           "Deobfuscation did not return a valid result bound to the original source",
         ),
       );
+    const outputRoot = resolve(parsed.data.output_directory);
+    const publishedPaths = [
+      result.data.source.published_copy.path,
+      result.data.output.path,
+      result.data.report.path,
+      result.data.manifest.path,
+      result.data.analysis_input.input_path,
+    ];
     if (
       result.data.source.path !== parsed.data.path ||
       result.data.source.published_copy.sha256 !== result.data.source.sha256 ||
@@ -78,16 +86,19 @@ export class JavaScriptDeobfuscationService {
       result.data.options.max_iterations !== parsed.data.max_iterations ||
       (result.data.status === "unchanged") !==
         (result.data.source.sha256 === result.data.output.sha256) ||
-      execution.value.subject.format !== "javascript"
+      execution.value.subject.format !== "javascript" ||
+      publishedPaths.some((path) => !isWithin(outputRoot, path))
     )
       return err(
         new AnalysisOutputError(
           OPERATION,
-          "Deobfuscation source, published copy, output status, or iteration bound disagrees with its Evidence binding",
+          "Deobfuscation source, published artifacts, output status, or iteration bound disagrees with its Evidence binding",
         ),
       );
-    return ok(
-      createEvidence(execution.value.subject, execution.value.provider, {
+    const evidence = createEvidence(
+      execution.value.subject,
+      execution.value.provider,
+      {
         operation: OPERATION,
         parameters: jsonObjectSchema.parse(parsed.data),
         result: jsonObjectSchema.parse(result.data),
@@ -98,7 +109,20 @@ export class JavaScriptDeobfuscationService {
         limitations: execution.value.limitations,
         confidence: "derived",
         authority: "shipped-artifact",
-      }),
+      },
     );
+    if (options?.signal?.aborted === true)
+      return err(
+        new AnalysisCancelledError(OPERATION, {
+          partialObservation: evidence,
+        }),
+      );
+    return ok(evidence);
   }
 }
+
+const isWithin = (root: string, path: string): boolean => {
+  const candidate = resolve(path);
+  const child = relative(root, candidate);
+  return child === "" || (!isAbsolute(child) && child !== ".." && !child.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`));
+};
