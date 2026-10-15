@@ -26,6 +26,11 @@ it("retains six MiB of worker diagnostics as files while keeping Evidence projec
       observedBytes: 1,
     },
   };
+  const limiterRun = {
+    snapshotSha256: sha256,
+    snapshotBytes: bytes.length,
+    arguments: ["--as=1:1", "--core=0:0", "--", "/private/engine"],
+  };
   try {
     const execution = await publishJsRedox({
       sourcePath: join(root, "selected.js"),
@@ -58,6 +63,16 @@ it("retains six MiB of worker diagnostics as files while keeping Evidence projec
         sha256,
         bytes: bytes.length,
       },
+      limiter: {
+        command: "/canonical/prlimit",
+        configuredCommand: "/selected/prlimit",
+        sha256,
+        bytes: bytes.length,
+      },
+      limiterRuns: {
+        version: limiterRun,
+        execution: limiterRun,
+      },
       version: "0.1.0",
       versionRun: snapshot,
       executionRun: snapshot,
@@ -83,6 +98,24 @@ it("retains six MiB of worker diagnostics as files while keeping Evidence projec
     expect(manifest.engine).toMatchObject({
       path: "/selected/engine",
       resolved_path: "/canonical/engine",
+    });
+    expect(manifest.resource_limiter).toMatchObject({
+      path: "/selected/prlimit",
+      resolved_path: "/canonical/prlimit",
+      sha256,
+      bytes: bytes.length,
+      runs: {
+        version: {
+          snapshot_sha256: sha256,
+          snapshot_bytes: bytes.length,
+          arguments: limiterRun.arguments,
+        },
+        execution: {
+          snapshot_sha256: sha256,
+          snapshot_bytes: bytes.length,
+          arguments: limiterRun.arguments,
+        },
+      },
     });
   } finally {
     await tree.rollback();
