@@ -22,7 +22,10 @@ launching it and reports this missing prerequisite as a capability error.
 
 The adapter uses util-linux `prlimit` (default `/usr/bin/prlimit`; override with
 absolute `REA_JAVASCRIPT_PRLIMIT_COMMAND`). REA installs neither tool and checks
-the configuration only when deobfuscation is requested.
+the configuration only when deobfuscation is requested. The selected limiter is
+fingerprinted independently of the engine. Each engine phase executes through a
+fresh verified private copy so a worker cannot mutate the limiter pathname used
+by the next phase.
 
 The audited source revision is
 `cfb9bc0788d326e6020568b298aa48135eb323d1` from
@@ -77,7 +80,9 @@ Published contents:
 - `inputs/source.js`: exact original source snapshot.
 - `deobfuscated/source.js`: the proof-gated unformatted output.
 - `reports/js-redox.json`: exact `js-safe-deobfuscate/v1` producer report.
-- `manifest.json`: source, output, report, engine and option identities.
+- `manifest.json`: source, output, report, engine and option identities, plus
+  the limiter's configured/canonical identity and per-phase private snapshot
+  path, digest, size and exact effective argv.
 - `diagnostics/`: retained version and transformation stdout/stderr. Evidence
   includes file paths, hashes, retained and observed byte counts, exit status
   and truncation state; diagnostic text stays in these files.
@@ -103,8 +108,11 @@ produced by js-redox's fail-closed static transform set under the validated
 report contract. Target JavaScript is never executed.
 
 The current adapter gives the owned worker a single-thread hint plus per-process
-1 GiB virtual-address-space and 120 CPU-second limits. The version probe and
-transform share one 120-second launch deadline. Input and transformed output are
-limited to 64 MiB each; the report and diagnostic streams are limited to 8 MiB.
-There is no aggregate process-count or cgroup memory limit. Other host platforms
-are not claimed by this adapter.
+ceilings of at most 1 GiB virtual address space, 64 MiB file size and 120 CPU
+seconds; each ceiling is clamped so REA never raises the process's inherited
+soft or hard limit. The version probe and transform share one 120-second launch
+deadline. Input and transformed output are limited to 64 MiB each; the report
+and diagnostic streams are limited to 8 MiB. The manifest records the exact
+per-phase `prlimit` argv after inherited-limit clamping. There is no aggregate
+process-count or cgroup memory limit. Other host platforms are not claimed by
+this adapter.
