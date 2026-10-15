@@ -33,6 +33,7 @@ export interface JsRedoxLimiterIdentity {
 }
 
 export interface JsRedoxLimiterRunIdentity {
+  readonly snapshotPath: string;
   readonly snapshotSha256: string;
   readonly snapshotBytes: number;
   readonly arguments: readonly string[];
@@ -192,6 +193,7 @@ const manifestValue = (
 });
 
 const limiterRunManifest = (run: JsRedoxLimiterRunIdentity) => ({
+  snapshot_path: run.snapshotPath,
   snapshot_sha256: run.snapshotSha256,
   snapshot_bytes: run.snapshotBytes,
   arguments: [...run.arguments],
