@@ -82,10 +82,11 @@ Published contents:
   includes file paths, hashes, retained and observed byte counts, exit status
   and truncation state; diagnostic text stays in these files.
 
-The inline result summarizes transform counts, iteration count, arithmetic-state
-proof count, static alias-installer proof counts, and the report's safety flags.
-The complete producer report remains available as an artifact instead of being
-expanded into the MCP response.
+The inline provider-neutral `proof` contains only the selected source SHA-256
+(`input_sha256`) and published output SHA-256 (`output_sha256`). Provider-specific
+rewrite counts, iteration details, arithmetic/alias proof information and safety
+flags remain in `reports/js-redox.json`; read that published report when those
+js-redox details are needed rather than expecting them in CLI/MCP Evidence.
 
 ## Semantics and limits
 
