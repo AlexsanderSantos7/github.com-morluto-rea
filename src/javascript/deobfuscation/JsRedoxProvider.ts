@@ -438,6 +438,7 @@ export class JsRedoxProvider implements JavaScriptDeobfuscationPort {
     return {
       snapshot,
       limiter: {
+        snapshotPath: limiter.command,
         snapshotSha256: limiter.sha256,
         snapshotBytes: limiter.bytes,
         arguments: limiterArguments,
