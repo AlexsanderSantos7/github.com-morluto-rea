@@ -25,6 +25,19 @@ export interface JsRedoxEngineIdentity {
   readonly bytes: number;
 }
 
+export interface JsRedoxLimiterIdentity {
+  readonly configuredCommand: string;
+  readonly command: string;
+  readonly sha256: string;
+  readonly bytes: number;
+}
+
+export interface JsRedoxLimiterRunIdentity {
+  readonly snapshotSha256: string;
+  readonly snapshotBytes: number;
+  readonly arguments: readonly string[];
+}
+
 interface StableBytes {
   readonly bytes: Buffer;
   readonly sha256: string;
@@ -50,6 +63,11 @@ export const publishJsRedox = async (input: {
   readonly reportFile: StableBytes;
   readonly report: JsRedoxReport;
   readonly engine: JsRedoxEngineIdentity;
+  readonly limiter: JsRedoxLimiterIdentity;
+  readonly limiterRuns: {
+    readonly version: JsRedoxLimiterRunIdentity;
+    readonly execution: JsRedoxLimiterRunIdentity;
+  };
   readonly version: string;
   readonly versionRun: ProviderProcessSnapshot;
   readonly executionRun: ProviderProcessSnapshot;
@@ -160,7 +178,23 @@ const manifestValue = (
     audited_source_revision: JS_REDOX_RELEASE.revision,
     executed_source_revision: null,
   },
+  resource_limiter: {
+    path: input.limiter.configuredCommand,
+    resolved_path: input.limiter.command,
+    sha256: input.limiter.sha256,
+    bytes: input.limiter.bytes,
+    runs: {
+      version: limiterRunManifest(input.limiterRuns.version),
+      execution: limiterRunManifest(input.limiterRuns.execution),
+    },
+  },
   options: { max_iterations: input.maxIterations },
+});
+
+const limiterRunManifest = (run: JsRedoxLimiterRunIdentity) => ({
+  snapshot_sha256: run.snapshotSha256,
+  snapshot_bytes: run.snapshotBytes,
+  arguments: [...run.arguments],
 });
 
 const buildResult = (
