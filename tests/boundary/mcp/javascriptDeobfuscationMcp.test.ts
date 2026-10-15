@@ -1,3 +1,6 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { expect, it, onTestFinished } from "vitest";
@@ -63,8 +66,19 @@ it.skipIf(process.platform !== "linux" || process.arch !== "x64")(
       parameters: { ...args, max_iterations: 16 },
       normalized_result: {
         runtime_execution: "not-performed",
-        proof: { runtime_semantics_preserved_by_design: true },
+        proof: {
+          input_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+          output_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+        },
       },
+    });
+    const report = JSON.parse(
+      await readFile(join(fixture.output, "reports/js-redox.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(report).toMatchObject({
+      safe_static_only: true,
+      presentation_formatted: false,
+      runtime_semantics_preserved_by_design: true,
     });
     expect(session.evidenceById(evidence.evidence_id)).toEqual(evidence);
     await assertDeobfuscationCleanup(fixture.launches);
