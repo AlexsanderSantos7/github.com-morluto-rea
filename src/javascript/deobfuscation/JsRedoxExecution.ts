@@ -1,17 +1,17 @@
 import { constants } from "node:fs";
 import { access, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { TextDecoder } from "node:util";
 import { performance } from "node:perf_hooks";
+import { TextDecoder } from "node:util";
 
 import type { AnalysisExecution } from "../../application/AnalysisProvider.js";
-import { SafeOutputTree } from "../../artifacts/SafeOutputTree.js";
 import { ArtifactReaderFailure } from "../../artifacts/ArtifactReader.js";
 import type { ArtifactResourceScope } from "../../artifacts/ArtifactResourceScope.js";
 import { readStableArtifact } from "../../artifacts/readStableArtifact.js";
+import { SafeOutputTree } from "../../artifacts/SafeOutputTree.js";
 import {
-  AnalysisCapabilityUnavailableError,
   AnalysisCancelledError,
+  AnalysisCapabilityUnavailableError,
   AnalysisOutputError,
   AnalysisResourceConstraintError,
   AnalysisTimeoutError,
@@ -31,14 +31,16 @@ import {
 import {
   publishJsRedox,
   type JsRedoxEngineIdentity,
+  type JsRedoxLimiterIdentity,
+  type JsRedoxLimiterRunIdentity,
 } from "./JsRedoxPublication.js";
 
 const OPERATION = "deobfuscate_javascript_source";
 
 export interface JsRedoxEngine extends JsRedoxEngineIdentity {
-  readonly limiter: string;
-  readonly limiterExecutable: Buffer;
-  readonly limiterSha256: string;
+  readonly limiter: JsRedoxLimiterIdentity & {
+    readonly executable: Buffer;
+  };
   readonly executable: Buffer;
 }
 
@@ -55,6 +57,11 @@ export interface JsRedoxRunRequest {
   readonly timeoutMs: number;
 }
 
+export interface JsRedoxRunResult {
+  readonly snapshot: ProviderProcessSnapshot;
+  readonly limiter: JsRedoxLimiterRunIdentity;
+}
+
 export const executeJsRedox = async (input: {
   readonly request: JavaScriptDeobfuscationInput;
   readonly signal?: AbortSignal;
@@ -63,9 +70,7 @@ export const executeJsRedox = async (input: {
   readonly runtimePath: string;
   readonly tree: SafeOutputTree;
   readonly resourceScope?: ArtifactResourceScope;
-  readonly run: (
-    request: JsRedoxRunRequest,
-  ) => Promise<ProviderProcessSnapshot>;
+  readonly run: (request: JsRedoxRunRequest) => Promise<JsRedoxRunResult>;
 }): Promise<AnalysisExecution> => {
   const snapshotPath = join(input.runtimePath, "source.js");
   const versionEnginePath = await snapshotEngine(input, "version");
@@ -87,7 +92,10 @@ export const executeJsRedox = async (input: {
       timeoutMs: remainingTimeoutMs(deadlineAt),
     });
 
-  const versionRun = await runWithinDeadline(versionEnginePath, ["--version"]);
+  const versionObservation = await runWithinDeadline(versionEnginePath, [
+    "--version",
+  ]);
+  const versionRun = versionObservation.snapshot;
   const version = parseJsRedoxVersion(versionRun.stdout.text);
   if (version !== JS_REDOX_RELEASE.version) {
     const maximumDiagnosticCharacters = 4_096;
@@ -122,7 +130,7 @@ export const executeJsRedox = async (input: {
   // runOwnedCommand has settled the complete version process family. A fresh
   // exclusive copy cannot follow a pathname the version probe replaced.
   const transformEnginePath = await snapshotEngine(input, "transform");
-  const executionRun = await runWithinDeadline(transformEnginePath, [
+  const executionObservation = await runWithinDeadline(transformEnginePath, [
     snapshotPath,
     outputPath,
     "--report",
@@ -130,6 +138,7 @@ export const executeJsRedox = async (input: {
     "--max-iterations",
     String(input.request.max_iterations),
   ]);
+  const executionRun = executionObservation.snapshot;
   const output = await readStableArtifact(
     outputPath,
     JS_REDOX_LIMITS.outputBytes,
@@ -181,6 +190,11 @@ export const executeJsRedox = async (input: {
     reportFile,
     report,
     engine: input.engine,
+    limiter: input.engine.limiter,
+    limiterRuns: {
+      version: versionObservation.limiter,
+      execution: executionObservation.limiter,
+    },
     version,
     versionRun,
     executionRun,
