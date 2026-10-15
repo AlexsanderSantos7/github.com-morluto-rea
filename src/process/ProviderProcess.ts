@@ -95,7 +95,7 @@ export interface ProviderProcessSnapshot {
   readonly diagnosticTruncated?: boolean;
   readonly stdout: {
     readonly text: string;
-    /** Original retained bytes for consumers that publish diagnostic artifacts. */
+    /** Original retained bytes for artifact publishers; intentionally non-enumerable. */
     readonly rawBytes?: Buffer;
     /** Bytes retained in text, limited by maxDiagnosticBytes when configured. */
     readonly bytes: number;
@@ -104,7 +104,7 @@ export interface ProviderProcessSnapshot {
   };
   readonly stderr: {
     readonly text: string;
-    /** Original retained bytes for consumers that publish diagnostic artifacts. */
+    /** Original retained bytes for artifact publishers; intentionally non-enumerable. */
     readonly rawBytes?: Buffer;
     /** Bytes retained in text, limited by maxDiagnosticBytes when configured. */
     readonly bytes: number;
@@ -569,12 +569,18 @@ class ProcessOutputCapture {
 
   snapshot(observedBytes: number): ProviderProcessSnapshot["stdout"] {
     const rawBytes = Buffer.concat(this.#chunks, this.#bytes);
-    return {
+    const snapshot: ProviderProcessSnapshot["stdout"] = {
       text: rawBytes.toString("utf8"),
-      rawBytes,
       bytes: this.#bytes,
       observedBytes,
     };
+    Object.defineProperty(snapshot, "rawBytes", {
+      value: rawBytes,
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    });
+    return snapshot;
   }
 }
 
