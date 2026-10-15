@@ -1,14 +1,17 @@
 import { access, readFile, writeFile } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect } from "vitest";
 
 import { JavaScriptDeobfuscationService } from "../../../src/application/javascript/JavaScriptDeobfuscationService.js";
 import { createJavaScriptDeobfuscationProvider } from "../../../src/composition/javascriptDeobfuscation.js";
+import {
+  prlimitArgumentVector,
+  readLinuxResourceLimits,
+} from "../../../src/process/LinuxResourceLimits.js";
 import { spawnOwnedProviderProcess } from "../../../src/process/ProviderProcess.js";
-import { createTestTempDirectory } from "../temporaryDirectory.js";
-import { readLinuxResourceLimits } from "../../../src/process/LinuxResourceLimits.js";
 import { JS_REDOX_LIMITS } from "../../../src/javascript/deobfuscation/JsRedoxRelease.js";
+import { createTestTempDirectory } from "../temporaryDirectory.js";
 
 /** Exercise the production provider boundary while replacing only the external producer bytes. */
 export const deobfuscationFixture = async (
@@ -39,20 +42,17 @@ export const deobfuscationFixture = async (
         await writeFile(configuredLimiter, "replacement executable");
       if (limiterBytes === undefined)
         throw new Error("fixture launched with an invalid limiter selection");
-      expect(options.command).toBe(join(options.cwd!, "prlimit"));
+      expect(dirname(options.command)).toBe(options.cwd);
+      expect(basename(options.command)).toMatch(/^prlimit-/u);
       expect(await readFile(options.command)).toEqual(limiterBytes);
       const limits = await readLinuxResourceLimits({
         address_space_bytes: JS_REDOX_LIMITS.addressSpaceBytes,
         file_bytes: JS_REDOX_LIMITS.outputBytes,
         cpu_seconds: JS_REDOX_LIMITS.cpuSeconds,
       });
-      expect(options.arguments.slice(0, separator + 1)).toEqual([
-        `--as=${limits.address_space_bytes}`,
-        `--fsize=${limits.file_bytes}`,
-        "--core=0",
-        `--cpu=${limits.cpu_seconds}`,
-        "--",
-      ]);
+      expect(options.arguments.slice(0, separator + 2)).toEqual(
+        prlimitArgumentVector(limits, enginePath),
+      );
       const phase = options.arguments.slice(separator + 2).includes("--version")
         ? "version"
         : "transform";
