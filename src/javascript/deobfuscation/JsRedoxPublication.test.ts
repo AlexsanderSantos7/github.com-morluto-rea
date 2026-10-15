@@ -27,6 +27,7 @@ it("retains six MiB of worker diagnostics as files while keeping Evidence projec
     },
   };
   const limiterRun = {
+    snapshotPath: "/private/prlimit-version",
     snapshotSha256: sha256,
     snapshotBytes: bytes.length,
     arguments: ["--as=1:1", "--core=0:0", "--", "/private/engine"],
@@ -106,11 +107,13 @@ it("retains six MiB of worker diagnostics as files while keeping Evidence projec
       bytes: bytes.length,
       runs: {
         version: {
+          snapshot_path: limiterRun.snapshotPath,
           snapshot_sha256: sha256,
           snapshot_bytes: bytes.length,
           arguments: limiterRun.arguments,
         },
         execution: {
+          snapshot_path: limiterRun.snapshotPath,
           snapshot_sha256: sha256,
           snapshot_bytes: bytes.length,
           arguments: limiterRun.arguments,
