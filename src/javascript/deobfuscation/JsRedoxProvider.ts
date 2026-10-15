@@ -8,10 +8,10 @@ import type {
   AnalysisExecution,
   ExecutionOptions,
 } from "../../application/AnalysisProvider.js";
-import { SafeOutputTree } from "../../artifacts/SafeOutputTree.js";
-import { SafeOutputTreeCreationFailure } from "../../artifacts/SafeOutputTreeCreationFailure.js";
 import { ArtifactResourceScope } from "../../artifacts/ArtifactResourceScope.js";
 import { readStableArtifact } from "../../artifacts/readStableArtifact.js";
+import { SafeOutputTree } from "../../artifacts/SafeOutputTree.js";
+import { SafeOutputTreeCreationFailure } from "../../artifacts/SafeOutputTreeCreationFailure.js";
 import { AnalysisError } from "../../domain/analysisErrorBase.js";
 import {
   AnalysisCancelledError,
@@ -26,21 +26,25 @@ import { ProviderAdapterError } from "../../domain/providerAdapterError.js";
 import { ProviderCleanupError } from "../../domain/providerCleanupError.js";
 import { err, ok, type Result } from "../../domain/result.js";
 import {
+  prlimitArgumentVector,
+  readLinuxResourceLimits,
+} from "../../process/LinuxResourceLimits.js";
+import {
   OwnedCommandFailure,
   runOwnedCommand,
 } from "../../process/OwnedCommand.js";
 import { PrivateRuntimeRoot } from "../../process/PrivateRuntimeRoot.js";
-import { readLinuxResourceLimits } from "../../process/LinuxResourceLimits.js";
 import type { ProviderProcessSupervisor } from "../../process/ProviderProcess.js";
-import {
-  JS_REDOX_LIMITS,
-  JS_REDOX_PROVIDER_IDENTITY,
-} from "./JsRedoxRelease.js";
 import {
   executeJsRedox,
   type JsRedoxEngine,
   type JsRedoxRunRequest,
+  type JsRedoxRunResult,
 } from "./JsRedoxExecution.js";
+import {
+  JS_REDOX_LIMITS,
+  JS_REDOX_PROVIDER_IDENTITY,
+} from "./JsRedoxRelease.js";
 
 const OPERATION = "deobfuscate_javascript_source";
 const HOST_REQUIREMENT =
@@ -264,14 +268,14 @@ export class JsRedoxProvider implements JavaScriptDeobfuscationPort {
 
   async #resolveEngine(signal?: AbortSignal): Promise<JsRedoxEngine> {
     const configured = this.environment.REA_JS_REDOX_COMMAND;
-    const limiter =
+    const configuredLimiter =
       this.environment.REA_JAVASCRIPT_PRLIMIT_COMMAND ?? "/usr/bin/prlimit";
     if (
       process.platform !== "linux" ||
       process.arch !== "x64" ||
       configured === undefined ||
       !isAbsolute(configured) ||
-      !isAbsolute(limiter)
+      !isAbsolute(configuredLimiter)
     )
       throw new AnalysisCapabilityUnavailableError(
         JS_REDOX_PROVIDER_IDENTITY.id,
@@ -289,10 +293,10 @@ export class JsRedoxProvider implements JavaScriptDeobfuscationPort {
         undefined,
         this.#resources,
       );
-      const limiterPath = await realpath(limiter);
-      await access(limiterPath, constants.X_OK);
+      const limiterCommand = await realpath(configuredLimiter);
+      await access(limiterCommand, constants.X_OK);
       const limiterExecutable = await readStableArtifact(
-        limiterPath,
+        limiterCommand,
         JS_REDOX_LIMITS.executableBytes,
         signal,
         undefined,
@@ -301,12 +305,16 @@ export class JsRedoxProvider implements JavaScriptDeobfuscationPort {
       return {
         configuredCommand: configured,
         command,
-        limiter,
-        limiterExecutable: limiterExecutable.bytes,
-        limiterSha256: limiterExecutable.sha256,
         sha256: executable.sha256,
         bytes: executable.bytes.length,
         executable: executable.bytes,
+        limiter: {
+          configuredCommand: configuredLimiter,
+          command: limiterCommand,
+          sha256: limiterExecutable.sha256,
+          bytes: limiterExecutable.bytes.length,
+          executable: limiterExecutable.bytes,
+        },
       };
     } catch (cause: unknown) {
       if (signal?.aborted) throw new AnalysisCancelledError(OPERATION);
@@ -349,11 +357,26 @@ export class JsRedoxProvider implements JavaScriptDeobfuscationPort {
     signal?: AbortSignal,
   ) {
     const limiter = join(runtimePath, `prlimit-${randomUUID()}`);
-    await writeFile(limiter, engine.limiterExecutable, {
+    await writeFile(limiter, engine.limiter.executable, {
       flag: "wx",
       mode: 0o700,
       ...(signal === undefined ? {} : { signal }),
     });
+    try {
+      await access(limiter, constants.X_OK);
+    } catch (cause: unknown) {
+      if (signal?.aborted) throw new AnalysisCancelledError(OPERATION);
+      throw new AnalysisCapabilityUnavailableError(
+        JS_REDOX_PROVIDER_IDENTITY.id,
+        OPERATION,
+        "The private resource-limiter snapshot is not executable. Select an exec-capable TMPDIR; noexec runtime mounts are unsupported.",
+        {
+          cause,
+          userMessage:
+            "Set TMPDIR to a writable exec-capable filesystem and retry.",
+        },
+      );
+    }
     const snapshot = await readStableArtifact(
       limiter,
       JS_REDOX_LIMITS.executableBytes,
@@ -361,20 +384,26 @@ export class JsRedoxProvider implements JavaScriptDeobfuscationPort {
       undefined,
       this.#resources,
     );
-    if (snapshot.sha256 !== engine.limiterSha256)
+    if (
+      snapshot.sha256 !== engine.limiter.sha256 ||
+      snapshot.bytes.length !== engine.limiter.bytes
+    )
       throw new AnalysisOutputError(
         OPERATION,
         "Owned resource-limiter snapshot disagrees with the fingerprinted executable bytes.",
       );
-    return limiter;
+    return {
+      command: limiter,
+      sha256: snapshot.sha256,
+      bytes: snapshot.bytes.length,
+    };
   }
 
-  async #run(engine: JsRedoxEngine, request: JsRedoxRunRequest) {
-    const limiter = await this.#bindLimiter(
-      engine,
-      request.cwd,
-      request.signal,
-    );
+  async #run(
+    engine: JsRedoxEngine,
+    request: JsRedoxRunRequest,
+  ): Promise<JsRedoxRunResult> {
+    const limiter = await this.#bindLimiter(engine, request.cwd, request.signal);
     const limits = await readLinuxResourceLimits(
       {
         address_space_bytes: JS_REDOX_LIMITS.addressSpaceBytes,
@@ -383,18 +412,14 @@ export class JsRedoxProvider implements JavaScriptDeobfuscationPort {
       },
       this.#resources,
     );
-    return runOwnedCommand(
+    const limiterArguments = [
+      ...prlimitArgumentVector(limits, request.command),
+      ...request.arguments,
+    ];
+    const snapshot = await runOwnedCommand(
       {
-        command: limiter,
-        arguments: [
-          `--as=${String(limits.address_space_bytes)}`,
-          `--fsize=${String(limits.file_bytes)}`,
-          "--core=0",
-          `--cpu=${String(limits.cpu_seconds)}`,
-          "--",
-          request.command,
-          ...request.arguments,
-        ],
+        command: limiter.command,
+        arguments: limiterArguments,
         expectedCommand: null,
         runId: `rea-js-redox-${randomUUID()}`,
         cwd: request.cwd,
@@ -410,6 +435,14 @@ export class JsRedoxProvider implements JavaScriptDeobfuscationPort {
         ...(this.launcher === undefined ? {} : { launcher: this.launcher }),
       },
     );
+    return {
+      snapshot,
+      limiter: {
+        snapshotSha256: limiter.sha256,
+        snapshotBytes: limiter.bytes,
+        arguments: limiterArguments,
+      },
+    };
   }
 
   #projectFailure(cause: unknown, signal?: AbortSignal): AnalysisError {
