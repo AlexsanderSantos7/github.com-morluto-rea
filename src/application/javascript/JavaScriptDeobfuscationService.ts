@@ -1,4 +1,4 @@
-import { isAbsolute, relative, resolve } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 
 import type { AnalysisError } from "../../domain/analysisErrorBase.js";
 import {
@@ -124,5 +124,8 @@ export class JavaScriptDeobfuscationService {
 const isWithin = (root: string, path: string): boolean => {
   const candidate = resolve(path);
   const child = relative(root, candidate);
-  return child === "" || (!isAbsolute(child) && child !== ".." && !child.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`));
+  return (
+    child === "" ||
+    (!isAbsolute(child) && child !== ".." && !child.startsWith(`..${sep}`))
+  );
 };
