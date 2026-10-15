@@ -182,7 +182,7 @@ const buildResult = (
     manifest: files.manifest,
     diagnostics: jsonObjectSchema.parse(files.diagnostics),
     proof: {
-      input_sha256: input.report.analysis_source_sha256,
+      input_sha256: input.report.input_sha256,
       output_sha256: input.output.sha256,
     },
     analysis_input: {
