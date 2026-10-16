@@ -1,4 +1,12 @@
 import { randomUUID } from "node:crypto";
+import {
+  basename,
+  dirname,
+  join,
+  normalize,
+  relative,
+  resolve,
+} from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { _electron as electron } from "playwright-core";
@@ -41,6 +49,8 @@ import {
 import { projectElectronActiveCapture } from "./PlaywrightElectronActiveProjection.js";
 import { readElectronFuseImage } from "../electron/ElectronFuseReader.js";
 import { assertNodeCliInspectArgumentsSupported } from "./PlaywrightElectronActiveFuses.js";
+import { isPathWithinRoot } from "../domain/localPath.js";
+import { readStableArtifact } from "../artifacts/readStableArtifact.js";
 
 const OPERATION = "capture_electron_scenario" as const;
 const STARTUP_TIMEOUT_MS = 60_000;
@@ -56,6 +66,159 @@ type ElectronPaths = {
   readonly executable: string;
   readonly application: string;
   readonly root: string;
+};
+
+const STANDARD_ENTRY_BASENAMES = new Set([
+  "main",
+  "index",
+  "app",
+  "entry",
+  "bundle",
+]);
+
+const STANDARD_ENTRY_EXTENSIONS = new Set([".js", ".cjs", ".mjs", ".html", ""]);
+
+const isRecognizedEntryName = (filePath: string): boolean => {
+  const base = basename(filePath).toLowerCase();
+  for (const ext of STANDARD_ENTRY_EXTENSIONS) {
+    if (ext === "" || base.endsWith(ext)) {
+      const stem = ext === "" ? base : base.slice(0, -ext.length);
+      if (STANDARD_ENTRY_BASENAMES.has(stem)) return true;
+    }
+  }
+  return false;
+};
+
+const isBundledAppEntry = async (
+  root: string,
+  application: string,
+  isDarwinOrWin: boolean,
+  signal?: AbortSignal,
+): Promise<boolean> => {
+  const normRoot = normalize(root);
+  const normApp = normalize(application);
+
+  // Exact match with the bundled root (e.g. app directory or app.asar archive)
+  const matchesRoot = isDarwinOrWin
+    ? normRoot.toLowerCase() === normApp.toLowerCase()
+    : normRoot === normApp;
+  if (matchesRoot) return true;
+
+  // Check if application is lexically contained within root
+  const isWithin = isDarwinOrWin
+    ? isPathWithinRoot(normRoot.toLowerCase(), normApp.toLowerCase())
+    : isPathWithinRoot(normRoot, normApp);
+  if (!isWithin) return false;
+
+  // If root is an asar archive, any entry file path inside it is part of the packaged bundle
+  if (normRoot.toLowerCase().endsWith(".asar")) {
+    return true;
+  }
+
+  // Try reading package.json using bounded, non-blocking regular-file reader
+  try {
+    const pkgPath = join(normRoot, "package.json");
+    const snapshot = await readStableArtifact(pkgPath, 64 * 1024, signal);
+    const pkg = JSON.parse(snapshot.bytes.toString("utf-8")) as {
+      main?: unknown;
+    };
+    const declaredMain =
+      typeof pkg.main === "string" && pkg.main.trim().length > 0
+        ? pkg.main.trim()
+        : "index.js";
+    const resolvedEntry = normalize(resolve(normRoot, declaredMain));
+    return isDarwinOrWin
+      ? resolvedEntry.toLowerCase() === normApp.toLowerCase()
+      : resolvedEntry === normApp;
+  } catch {
+    // If package.json is missing, unreadable, or not a regular file,
+    // match conventional Electron entry file patterns, distinguishing them from other scripts.
+    return isRecognizedEntryName(normApp);
+  }
+};
+
+/**
+ * Determine whether the executable is a packaged application binary that already
+ * bundles and launches the target application entry point automatically without CLI arguments.
+ * Generic Electron binaries (such as `electron`, `electron.exe`, or `Electron.app`) and
+ * separate applications living under resource directories require passing the application path.
+ */
+export const executableContainsApplication = async (
+  executable: string,
+  application: string,
+  signal?: AbortSignal,
+): Promise<boolean> => {
+  if (executable === application) return true;
+
+  const normalizedExecutable = normalize(executable);
+  const normalizedApplication = normalize(application);
+  const exeDir = dirname(normalizedExecutable);
+  const exeBase = basename(normalizedExecutable)
+    .toLowerCase()
+    .replace(/\.exe$/, "");
+
+  // Generic stock Electron runner executables never package a target application.
+  if (exeBase === "electron") {
+    return false;
+  }
+
+  const candidateRoots: string[] = [
+    join(exeDir, "resources", "app.asar"),
+    join(exeDir, "resources", "app"),
+    join(exeDir, "Resources", "app.asar"),
+    join(exeDir, "Resources", "app"),
+  ];
+
+  let bundleRoot: string | undefined;
+
+  // macOS app bundle: <App>.app/Contents/MacOS/<exec>
+  const parent = dirname(exeDir);
+  const grandparent = dirname(parent);
+  if (
+    basename(exeDir).toLowerCase() === "macos" &&
+    basename(parent).toLowerCase() === "contents" &&
+    basename(grandparent).toLowerCase().endsWith(".app")
+  ) {
+    // If the bundle itself is generic Electron.app, it is not a packaged app.
+    if (basename(grandparent).toLowerCase() === "electron.app") {
+      return false;
+    }
+    bundleRoot = grandparent;
+    candidateRoots.push(
+      join(parent, "Resources", "app.asar"),
+      join(parent, "Resources", "app"),
+      join(parent, "resources", "app.asar"),
+      join(parent, "resources", "app"),
+    );
+  }
+
+  const isDarwinOrWin =
+    process.platform === "win32" || process.platform === "darwin";
+
+  // 1. Matches macOS .app bundle root
+  if (bundleRoot !== undefined) {
+    const bundleMatches = isDarwinOrWin
+      ? normalize(bundleRoot).toLowerCase() ===
+        normalizedApplication.toLowerCase()
+      : normalize(bundleRoot) === normalizedApplication;
+    if (bundleMatches) return true;
+  }
+
+  // 2. Matches bundled app archive/directory or its entry file inside
+  for (const root of candidateRoots) {
+    if (
+      await isBundledAppEntry(
+        root,
+        normalizedApplication,
+        isDarwinOrWin,
+        signal,
+      )
+    ) {
+      return true;
+    }
+  }
+
+  return false;
 };
 
 /** Launch an owned Electron application through the official Playwright API. */
@@ -109,11 +272,25 @@ export class PlaywrightElectronActiveProvider implements ElectronActiveObservati
         await systemProcessOwnershipHost.captureBaseline?.(options.signal);
       if (options.signal?.aborted)
         throw new BrowserObservationError(OPERATION, "cancelled");
+      const containsApp = await runWithExecutionLimits(
+        executableContainsApplication(
+          paths.executable,
+          paths.application,
+          options.signal,
+        ),
+        options.signal,
+        startupDeadline,
+      );
       const launchOptions: Parameters<typeof electron.launch>[0] = {
         executablePath: paths.executable,
         cwd: paths.root,
         env: safeElectronEnvironment(this.environment, runId),
-        args: ["-r", hookPath, paths.application, ...input.args],
+        args: [
+          "-r",
+          hookPath,
+          ...(containsApp ? [] : [paths.application]),
+          ...input.args,
+        ],
         timeout: Math.max(1, startupDeadline - performance.now()),
       };
       application = await containLaunchRejections(() =>
