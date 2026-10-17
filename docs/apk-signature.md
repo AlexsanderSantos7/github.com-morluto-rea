@@ -73,8 +73,7 @@ rea inspect-apk-signature /path/app.apk
 - **Per signer:** the certificate's **SHA-256 fingerprint over the raw embedded
   DER** (the same value `apksigner --print-certs` prints), plus subject, issuer,
   serial, ISO 8601 validity and public-key algorithm when the X.509 parser can
-  read them (each is `null` otherwise); declared digest algorithms; and for
-  v3/v3.1 the bound min/max SDK.
+  read them (each is `null` otherwise); declared digest algorithms; and for v3/v3.1 the bounded min/max SDK.
 - **Key rotation (v3/v3.1):** the declared proof-of-rotation lineage, oldest
   first. Each node carries its certificate and the capability flags **retained
   by that node's own certificate** after rotation (installed data, shared UID,
@@ -98,8 +97,8 @@ rea inspect-apk-signature /path/app.apk
     `X-Android-APK-Signed` marker is not read, so this cannot distinguish an
     APK signed only with v1 from one whose v2/v3 block was removed.
   - `schemes_agree_on_signer` (observed): every present block scheme presents
-    the same _set_ of signer certificates. An extra signer in one scheme is
-    disagreement; a signer without a certificate makes it `null` (unknown).
+    the same _set_ of signer certificates. An extra signer in one scheme is a disagreement
+    ; a signer without a certificate makes it `null` (unknown).
     Build-tools 33+ rotate through v3.1 by default, so a rotated app usually
     reads `false` here and `true` below.
   - `signer_change_declared_by_rotation` (declared): the signers differ, but
